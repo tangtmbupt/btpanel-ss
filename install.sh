@@ -11,7 +11,7 @@ fi
 Install_ss()
 {
     apt-get update
-    sudo apt-get install python-pip
+    apt-get install python-pip
     
     pip install shadowsocks m2crypto
     mkdir -p $pluginPath
