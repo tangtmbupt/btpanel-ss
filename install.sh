@@ -19,7 +19,7 @@ generate_password() {
     openssl rand -hex 8
 }
 
-# 防火墙操作函数
+# 防火墙操作
 firewall_op() {
     local port=$1
     local action=$2  # allow/delete
@@ -79,10 +79,11 @@ install_ss() {
     id $SS_USER >/dev/null 2>&1 || groupadd $SS_USER
     id $SS_USER >/dev/null 2>&1 || useradd -s /sbin/nologin -M -g $SS_USER $SS_USER
 
+    # 生成随机密码
     local password
     password=$(generate_password)
 
-    # 写 shadowsocks-libev 配置
+    # 写 shadowsocks 配置
     cat > "$PLUGIN_PATH/config.json" <<EOF
 {
     "server":"0.0.0.0",
@@ -94,7 +95,7 @@ install_ss() {
 }
 EOF
 
-    # 将配置链接到系统默认位置
+    # 链接到系统默认位置
     cp "$PLUGIN_PATH/config.json" /etc/shadowsocks-libev/config.json
     chown $SS_USER:$SS_USER /etc/shadowsocks-libev/config.json
 
@@ -102,9 +103,19 @@ EOF
     systemctl enable shadowsocks-libev
     systemctl restart shadowsocks-libev
 
+    # 打开端口
     set_port $SS_PORT
 
-    echo "Installation completed. Shadowsocks password for port $SS_PORT: $password"
+    # 显示信息给用户
+    echo
+    echo "=================================================="
+    echo "Shadowsocks installed successfully!"
+    echo "Server IP: $(hostname -I | awk '{print $1}')"
+    echo "Port: $SS_PORT"
+    echo "Password: $password"
+    echo "Method: aes-256-cfb"
+    echo "=================================================="
+    echo
 }
 
 uninstall_ss() {
