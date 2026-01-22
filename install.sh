@@ -1,114 +1,143 @@
 #!/bin/bash
+set -euo pipefail
 PATH=/bin:/sbin:/usr/bin:/usr/sbin:/usr/local/bin:/usr/local/sbin:~/bin
 export PATH
-pluginPath=/www/server/panel/plugin/ss
 
-if [ ! -f /etc/init.d/bt ];then
-    echo 'No BT-Panel is installed, please go to http://www.bt.cn installation.';
-    exit;
+PLUGIN_PATH=/www/server/panel/plugin/ss
+SERVICE_NAME=ss
+SS_USER=ssuser
+
+# 检查 BT-Panel 是否安装
+if [ ! -f /etc/init.d/bt ]; then
+    echo "No BT-Panel is installed, please go to http://www.bt.cn to install."
+    exit 1
 fi
 
-Install_ss()
-{
-    apt-get update
-    apt-get install python-pip
-    
-    pip install shadowsocks m2crypto
-    mkdir -p $pluginPath
-    \cp -a -r ss_main.py icon.png info.json index.html install.sh ss.init shadowsocks.zip shadowsocks-nightly-4.2.5.apk $pluginPath/
-    \cp -a -r ss.init /etc/init.d/ss
-    chmod +x /etc/init.d/ss
-    chkconfig --add ss
-    chkconfig --level 2345 ss on
+# 生成随机密码
+generate_password() {
+    openssl rand -hex 8
+}
 
-    password=`cat /dev/urandom | head -n 16 | md5sum | head -c 16`
-    cat > $pluginPath/config.json <<EOF
+# 防火墙操作
+firewall_op() {
+    local port=$1
+    local action=$2  # allow/delete
+
+    if command -v ufw >/dev/null 2>&1; then
+        ufw $action $port/tcp
+        ufw $action $port/udp
+        ufw reload
+    fi
+
+    if command -v firewall-cmd >/dev/null 2>&1; then
+        firewall-cmd --permanent --zone=public --${action}-port=${port}/tcp
+        firewall-cmd --permanent --zone=public --${action}-port=${port}/udp
+        firewall-cmd --reload
+    fi
+
+    if command -v iptables >/dev/null 2>&1; then
+        if [ "$action" == "allow" ]; then
+            iptables -I INPUT -p tcp -m state --state NEW --dport $port -j ACCEPT
+            iptables -I INPUT -p udp -m state --state NEW --dport $port -j ACCEPT
+        else
+            iptables -D INPUT -p tcp -m state --state NEW --dport $port -j ACCEPT || true
+            iptables -D INPUT -p udp -m state --state NEW --dport $port -j ACCEPT || true
+        fi
+        [ -f /etc/init.d/iptables ] && /etc/init.d/iptables save
+    fi
+}
+
+set_port() {
+    firewall_op "$1" allow
+}
+
+remove_port() {
+    firewall_op "$1" delete
+}
+
+install_ss() {
+    apt-get update
+    apt-get install -y python3-pip
+
+    python3 -m pip install --upgrade pip
+    python3 -m pip install shadowsocks m2crypto
+
+    mkdir -p "$PLUGIN_PATH"
+    cp -a ss_main.py icon.png info.json index.html install.sh ss.init shadowsocks.zip shadowsocks-nightly-4.2.5.apk "$PLUGIN_PATH/"
+    cp -a ss.init /etc/init.d/ss
+    chmod +x /etc/init.d/ss
+
+    # systemd 支持
+    if command -v systemctl >/dev/null 2>&1; then
+        systemctl enable "$SERVICE_NAME"
+    else
+        chkconfig --add "$SERVICE_NAME"
+        chkconfig --level 2345 "$SERVICE_NAME" on
+    fi
+
+    local password
+    password=$(generate_password)
+
+    cat > "$PLUGIN_PATH/config.json" <<EOF
 {
     "server":"0.0.0.0",
     "local_address":"127.0.0.1",
     "local_port":1080,
     "port_password":{
-    	"62443":"$password"
+        "62443":"$password"
     },
     "timeout":300,
     "method":"aes-256-cfb",
     "fast_open":false
 }
 EOF
-    groupadd ssuser
-    useradd -s /sbin/nologin -M -g ssuser ssuser
-    chown ssuser:ssuser $pluginPath/config.json
-    Set_port 62443
+
+    # 创建用户组和用户
+    id $SS_USER >/dev/null 2>&1 || groupadd $SS_USER
+    id $SS_USER >/dev/null 2>&1 || useradd -s /sbin/nologin -M -g $SS_USER $SS_USER
+    chown $SS_USER:$SS_USER "$PLUGIN_PATH/config.json"
+
+    set_port 62443
     /etc/init.d/ss start
 }
 
-Set_port()
-{
-	if [ -f "/usr/sbin/ufw" ];then
-		ufw allow $1/tcp
-		ufw allow $1/udp
-		ufw reload
-	fi
-	
-	if [ -f "/etc/sysconfig/firewalld" ];then
-		firewall-cmd --permanent --zone=public --add-port=$1/tcp
-		firewall-cmd --permanent --zone=public --add-port=$1/udp
-		firewall-cmd --reload
-	fi
-	
-	if [ -f "/etc/init.d/iptables" ];then
-		iptables -I INPUT -p tcp -m state --state NEW -m tcp --dport $1 -j ACCEPT
-		iptables -I INPUT -p udp -m state --state NEW -m udp --dport $1 -j ACCEPT
-		/etc/init.d/iptables save
-	fi
-}
+uninstall_ss() {
+    /etc/init.d/ss stop || true
 
-Remove_port()
-{
-	if [ -f "/usr/sbin/ufw" ];then
-		ufw delete allow $1/tcp
-		ufw delete allow $1/udp
-		ufw reload
-	fi
-	
-	if [ -f "/etc/sysconfig/firewalld" ];then
-		firewall-cmd --permanent --zone=public --remove-port=$1/tcp
-		firewall-cmd --permanent --zone=public --remove-port=$1/udp
-		firewall-cmd --reload
-	fi
-	
-	if [ -f "/etc/init.d/iptables" ];then
-		iptables -D INPUT -p tcp -m state --state NEW -m tcp --dport $1 -j ACCEPT
-		iptables -D INPUT -p udp -m state --state NEW -m udp --dport $1 -j ACCEPT
-		/etc/init.d/iptables save
-	fi
-}
+    if command -v systemctl >/dev/null 2>&1; then
+        systemctl disable "$SERVICE_NAME" || true
+    else
+        chkconfig --del "$SERVICE_NAME" || true
+    fi
 
-Uninstall_ss()
-{
-    /etc/init.d/ss stop
-    chkconfig --del ss
     rm -f /etc/init.d/ss
-    rm -rf $pluginPath
-    pip uninstall shadowsocks -y
-    userdel ssuser
-    groupdel ssuser
+    rm -rf "$PLUGIN_PATH"
+    python3 -m pip uninstall shadowsocks -y || true
+
+    id $SS_USER >/dev/null 2>&1 && userdel $SS_USER
+    getent group $SS_USER >/dev/null 2>&1 && groupdel $SS_USER
 }
 
-if [ "${1}" == 'install' ];then
-	Install_ss
-elif [ "${1}" == 'uninstall' ];then
-	Uninstall_ss
-elif [ "${1}" == 'port' ];then
-	Set_port $2
-elif [ "${1}" == 'rmport' ];then
-	Remove_port $2
-else
-	while [ "$isInstall" != 'y' ] && [ "$isInstall" != 'n' ]
-	do
-		read -p "Do you really want to install ss-plugin to BT-Panel?(y/n): " isInstall;
-	done
-	if [ "$isInstall" = 'y' ] || [ "$isInstall" = 'Y' ];then
-		Install_ss
-	fi
-fi
+# 主逻辑
+case "${1:-}" in
+    install)
+        install_ss
+        ;;
+    uninstall)
+        uninstall_ss
+        ;;
+    port)
+        set_port "$2"
+        ;;
+    rmport)
+        remove_port "$2"
+        ;;
+    *)
+        while [[ "$isInstall" != "y" && "$isInstall" != "n" ]]; do
+            read -p "Do you really want to install ss-plugin to BT-Panel?(y/n): " isInstall
+        done
+        if [[ "$isInstall" =~ ^[yY]$ ]]; then
+            install_ss
+        fi
+        ;;
+esac
