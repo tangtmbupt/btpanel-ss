@@ -6,6 +6,7 @@ export PATH
 PLUGIN_PATH=/www/server/panel/plugin/ss
 SERVICE_NAME=ss
 SS_USER=ssuser
+SS_PORT=62443
 
 # 检查 BT-Panel 是否安装
 if [ ! -f /etc/init.d/bt ]; then
@@ -18,7 +19,7 @@ generate_password() {
     openssl rand -hex 8
 }
 
-# 防火墙操作
+# 防火墙操作函数
 firewall_op() {
     local port=$1
     local action=$2  # allow/delete
@@ -56,20 +57,22 @@ remove_port() {
 }
 
 install_ss() {
+    echo "Installing Shadowsocks plugin..."
+
     apt-get update
-    apt-get install -y python3-pip
+    apt-get install -y python3-pip python3-setuptools python3-dev build-essential
 
     python3 -m pip install --upgrade pip
-    python3 -m pip install shadowsocks m2crypto
+    python3 -m pip install https://github.com/shadowsocks/shadowsocks/archive/master.zip m2crypto
 
     mkdir -p "$PLUGIN_PATH"
     cp -a ss_main.py icon.png info.json index.html install.sh ss.init shadowsocks.zip shadowsocks-nightly-4.2.5.apk "$PLUGIN_PATH/"
     cp -a ss.init /etc/init.d/ss
     chmod +x /etc/init.d/ss
 
-    # systemd 支持
+    # systemd 启用服务
     if command -v systemctl >/dev/null 2>&1; then
-        systemctl enable "$SERVICE_NAME"
+        systemctl enable "$SERVICE_NAME" || true
     else
         chkconfig --add "$SERVICE_NAME"
         chkconfig --level 2345 "$SERVICE_NAME" on
@@ -78,13 +81,14 @@ install_ss() {
     local password
     password=$(generate_password)
 
+    # 写配置文件
     cat > "$PLUGIN_PATH/config.json" <<EOF
 {
     "server":"0.0.0.0",
     "local_address":"127.0.0.1",
     "local_port":1080,
     "port_password":{
-        "62443":"$password"
+        "$SS_PORT":"$password"
     },
     "timeout":300,
     "method":"aes-256-cfb",
@@ -97,11 +101,13 @@ EOF
     id $SS_USER >/dev/null 2>&1 || useradd -s /sbin/nologin -M -g $SS_USER $SS_USER
     chown $SS_USER:$SS_USER "$PLUGIN_PATH/config.json"
 
-    set_port 62443
+    set_port $SS_PORT
     /etc/init.d/ss start
+    echo "Installation completed. Shadowsocks password for port $SS_PORT: $password"
 }
 
 uninstall_ss() {
+    echo "Uninstalling Shadowsocks plugin..."
     /etc/init.d/ss stop || true
 
     if command -v systemctl >/dev/null 2>&1; then
@@ -116,6 +122,7 @@ uninstall_ss() {
 
     id $SS_USER >/dev/null 2>&1 && userdel $SS_USER
     getent group $SS_USER >/dev/null 2>&1 && groupdel $SS_USER
+    remove_port $SS_PORT
 }
 
 # 主逻辑
