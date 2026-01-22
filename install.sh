@@ -4,7 +4,7 @@ PATH=/bin:/sbin:/usr/bin:/usr/sbin:/usr/local/bin:/usr/local/sbin:~/bin
 export PATH
 
 PLUGIN_PATH=/www/server/panel/plugin/ss
-SERVICE_NAME=ss
+SERVICE_NAME=shadowsocks-libev
 SS_USER=ssuser
 SS_PORT=62443
 
@@ -57,72 +57,75 @@ remove_port() {
 }
 
 install_ss() {
-    echo "Installing Shadowsocks plugin..."
+    echo "Installing shadowsocks-libev plugin..."
 
-    apt-get update
-    apt-get install -y python3-pip python3-setuptools python3-dev build-essential
-
-    python3 -m pip install --upgrade pip
-    python3 -m pip install https://github.com/shadowsocks/shadowsocks/archive/master.zip m2crypto
-
-    mkdir -p "$PLUGIN_PATH"
-    cp -a ss_main.py icon.png info.json index.html install.sh ss.init shadowsocks.zip shadowsocks-nightly-4.2.5.apk "$PLUGIN_PATH/"
-    cp -a ss.init /etc/init.d/ss
-    chmod +x /etc/init.d/ss
-
-    # systemd 启用服务
-    if command -v systemctl >/dev/null 2>&1; then
-        systemctl enable "$SERVICE_NAME" || true
+    # 安装 shadowsocks-libev
+    if command -v apt-get >/dev/null 2>&1; then
+        apt-get update
+        apt-get install -y shadowsocks-libev
+    elif command -v yum >/dev/null 2>&1; then
+        yum install -y epel-release
+        yum install -y shadowsocks-libev
     else
-        chkconfig --add "$SERVICE_NAME"
-        chkconfig --level 2345 "$SERVICE_NAME" on
+        echo "Unsupported package manager. Install shadowsocks-libev manually."
+        exit 1
     fi
+
+    # 创建插件目录
+    mkdir -p "$PLUGIN_PATH"
+    cp -a ss_main.py icon.png info.json index.html install.sh "$PLUGIN_PATH/"
+
+    # 创建用户
+    id $SS_USER >/dev/null 2>&1 || groupadd $SS_USER
+    id $SS_USER >/dev/null 2>&1 || useradd -s /sbin/nologin -M -g $SS_USER $SS_USER
 
     local password
     password=$(generate_password)
 
-    # 写配置文件
+    # 写 shadowsocks-libev 配置
     cat > "$PLUGIN_PATH/config.json" <<EOF
 {
     "server":"0.0.0.0",
-    "local_address":"127.0.0.1",
-    "local_port":1080,
-    "port_password":{
-        "$SS_PORT":"$password"
-    },
+    "server_port":$SS_PORT,
+    "password":"$password",
     "timeout":300,
     "method":"aes-256-cfb",
     "fast_open":false
 }
 EOF
 
-    # 创建用户组和用户
-    id $SS_USER >/dev/null 2>&1 || groupadd $SS_USER
-    id $SS_USER >/dev/null 2>&1 || useradd -s /sbin/nologin -M -g $SS_USER $SS_USER
-    chown $SS_USER:$SS_USER "$PLUGIN_PATH/config.json"
+    # 将配置链接到系统默认位置
+    cp "$PLUGIN_PATH/config.json" /etc/shadowsocks-libev/config.json
+    chown $SS_USER:$SS_USER /etc/shadowsocks-libev/config.json
+
+    # 启用 systemd 服务
+    systemctl enable shadowsocks-libev
+    systemctl restart shadowsocks-libev
 
     set_port $SS_PORT
-    /etc/init.d/ss start
+
     echo "Installation completed. Shadowsocks password for port $SS_PORT: $password"
 }
 
 uninstall_ss() {
-    echo "Uninstalling Shadowsocks plugin..."
-    /etc/init.d/ss stop || true
+    echo "Uninstalling shadowsocks-libev plugin..."
 
-    if command -v systemctl >/dev/null 2>&1; then
-        systemctl disable "$SERVICE_NAME" || true
-    else
-        chkconfig --del "$SERVICE_NAME" || true
-    fi
+    systemctl stop shadowsocks-libev || true
+    systemctl disable shadowsocks-libev || true
 
-    rm -f /etc/init.d/ss
     rm -rf "$PLUGIN_PATH"
-    python3 -m pip uninstall shadowsocks -y || true
+    rm -f /etc/shadowsocks-libev/config.json
+
+    remove_port $SS_PORT
 
     id $SS_USER >/dev/null 2>&1 && userdel $SS_USER
     getent group $SS_USER >/dev/null 2>&1 && groupdel $SS_USER
-    remove_port $SS_PORT
+
+    if command -v apt-get >/dev/null 2>&1; then
+        apt-get remove -y shadowsocks-libev
+    elif command -v yum >/dev/null 2>&1; then
+        yum remove -y shadowsocks-libev
+    fi
 }
 
 # 主逻辑
